@@ -67,16 +67,22 @@ class SemanticSegmentationPostProcessor(PostProcessor):
             # overlap might be different.
             pad = int(self.config.data.tile_overlap / 2)
 
-            # don't remove padding if the tile is at the beginning
-            pad_left = pad if minx != 0 else 0
-            pad_bottom = pad if miny != 0 else 0
+            # Remove overlap padding only for interior tiles so boundary tiles keep their full coverage.
+            # This ensures no data loss where the tiler already truncated the window to fit the raster.
+            pad_left = pad if minx > 0 else 0
+            pad_bottom = pad if miny > 0 else 0
+            pad_right = pad if maxx < self.image.width else 0
+            pad_top = pad if maxy < self.image.height else 0
 
-            # don't remove padding if the tile extends beyond the image or
-            # stops at the image bounds
-            pad_right = pad if maxx <= self.image.width else 1
-            pad_top = pad if maxy <= self.image.height else 1
+            # Compute explicit slice bounds so zero padding truly keeps the edge pixels intact.
+            # Using None/-pad style slicing would always drop at least one pixel.
+            y_start = pad_bottom
+            y_end = pred.shape[1] - pad_top if pad_top > 0 else pred.shape[1]
+            x_start = pad_left
+            x_end = pred.shape[2] - pad_right if pad_right > 0 else pred.shape[2]
 
-            pred = pred[:, pad_bottom:-pad_top, pad_left:-pad_right]
+            pred = pred[:, y_start:y_end, x_start:x_end]
+            # Track the cropped inner extent so the cache knows where to merge this tile.
             inset_box = box(
                 minx + pad_left, miny + pad_bottom, maxx - pad_right, maxy - pad_top
             )
@@ -119,9 +125,9 @@ class SemanticSegmentationPostProcessor(PostProcessor):
                     os.path.abspath(self.config.data.output), "*_segmentation.tif"
                 )
             )
-            assert (
-                len(output_files) > 0
-            ), "Couldn't find any output tiles (looking for *_segmentation.tif)"
+            assert len(output_files) > 0, (
+                "Couldn't find any output tiles (looking for *_segmentation.tif)"
+            )
 
             self.cache.generate_vrt(
                 files=output_files, root=os.path.abspath(self.config.data.output)
